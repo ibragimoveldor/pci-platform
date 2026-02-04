@@ -1,0 +1,199 @@
+version: '3.8'
+
+services:
+  # =============================================================================
+  # API Server
+  # =============================================================================
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./backend/ml:/app/ml
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://pci:pci_secret@postgres:5432/pci_db
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=pci-images
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - ENVIRONMENT=development
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - pci-network
+
+  # =============================================================================
+  # Celery Worker (CPU tasks)
+  # =============================================================================
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    volumes:
+      - ./backend:/app
+      - ./backend/ml:/app/ml
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://pci:pci_secret@postgres:5432/pci_db
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=pci-images
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    depends_on:
+      - api
+      - redis
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
+    networks:
+      - pci-network
+
+  # =============================================================================
+  # Celery Beat (Scheduled tasks)
+  # =============================================================================
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    volumes:
+      - ./backend:/app
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    depends_on:
+      - celery-worker
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    networks:
+      - pci-network
+
+  # =============================================================================
+  # PostgreSQL Database
+  # =============================================================================
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=pci
+      - POSTGRES_PASSWORD=pci_secret
+      - POSTGRES_DB=pci_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pci -d pci_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pci-network
+
+  # =============================================================================
+  # Redis (Cache + Task Queue)
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pci-network
+
+  # =============================================================================
+  # MinIO (S3-compatible Object Storage)
+  # =============================================================================
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - pci-network
+
+  # =============================================================================
+  # MinIO Setup (Create bucket on startup)
+  # =============================================================================
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/pci-images --ignore-existing;
+      mc anonymous set download myminio/pci-images;
+      exit 0;
+      "
+    networks:
+      - pci-network
+
+  # =============================================================================
+  # Frontend (React + Vite)
+  # =============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - api
+    networks:
+      - pci-network
+
+  # =============================================================================
+  # Nginx (Reverse Proxy) - Optional for production-like setup
+  # =============================================================================
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - frontend
+    profiles:
+      - production
+    networks:
+      - pci-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+networks:
+  pci-network:
+    driver: bridge

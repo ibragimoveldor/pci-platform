@@ -1,0 +1,60 @@
+# =============================================================================
+# PCI Platform Backend Dependencies
+# =============================================================================
+
+# Web Framework
+fastapi
+uvicorn[standard]
+gunicorn
+python-multipart
+
+# Database
+sqlalchemy[asyncio]
+asyncpg
+alembic
+greenlet
+
+# Validation & Settings
+pydantic
+pydantic-settings
+email-validator
+
+# Authentication
+python-jose[cryptography]
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+
+# Task Queue
+celery[redis]
+redis
+flower
+
+# Object Storage
+minio
+boto3
+
+# ML/CV Dependencies
+numpy
+opencv-python-headless
+pillow
+# torch>=2.0.0  # Uncomment for GPU support
+# ultralytics>=8.0.0  # YOLO
+
+# Utilities
+python-dateutil
+httpx
+aiofiles
+orjson
+
+# Development
+pytest
+pytest-asyncio
+pytest-cov
+black
+ruff
+mypy
+
+# Logging & Monitoring
+structlog
+sentry-sdk[fastapi]
+prometheus-client
